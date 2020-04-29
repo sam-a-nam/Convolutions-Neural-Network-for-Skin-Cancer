@@ -1,0 +1,183 @@
+#Import libraries
+import os
+import numpy as np
+np.random.seed(10)
+import pandas as pd
+
+#for graphing data
+%matplotlib inline
+import matplotlib.pyplot as plt
+
+
+from glob import glob
+import seaborn as sns
+from PIL import Image
+from sklearn.preprocessing import StandardScaler 
+from sklearn.model_selection import train_test_split, KFold, cross_val_score, GridSearchCV
+from sklearn.metrics import accuracy_score
+import itertools
+
+#for building my model
+import keras
+from keras.utils.np_utils import to_categorical
+from keras.models import Sequential, Model
+from keras.layers import Dense, Dropout, Flatten, Conv2D, MaxPool2D
+from keras import backend as K
+from keras.layers.normalization import BatchNormalization
+from keras.utils.np_utils import to_categorical
+from keras.optimizers import Adam, RMSprop
+from keras.preprocessing.image import ImageDataGenerator
+from keras.callbacks import ReduceLROnPlateau
+from keras.wrappers.scikit_learn import KerasClassifier
+from keras.applications.resnet50 import ResNet50
+from keras import backend as K
+
+
+
+benign_train_set = 'downloads/skin-cancer-malignant-vs-benign/train/benign'
+malignant_train_set = 'downloads/skin-cancer-malignant-vs-benign/train/malignant'
+benign_test_set = 'downloads/skin-cancer-malignant-vs-benign/test/benign'
+malignant_test_set = 'downloads/skin-cancer-malignant-vs-benign/test/malignant'
+
+read = lambda imname: np.asarray(Image.open(imname).convert("RGB"))
+
+benign_train = [read(os.path.join(benign_train_set, filename)) for filename in os.listdir(benign_train_set)]
+X_benign = np.array(benign_train, dtype='uint8')
+malignant_train = [read(os.path.join(malignant_train_set, filename)) for filename in os.listdir(malignant_train_set)]
+X_malignant = np.array(malignant_train, dtype='uint8')
+benign_test = [read(os.path.join(benign_test_set, filename)) for filename in os.listdir(benign_test_set)]
+X_benign_test = np.array(benign_test, dtype='uint8')
+malignant_test = [read(os.path.join(malignant_test_set, filename)) for filename in os.listdir(malignant_test_set)]
+X_malignant_test = np.array(malignant_test, dtype='uint8')
+
+y_benign = np.zeros(X_benign.shape[0])
+y_malignant = np.ones(X_malignant.shape[0])
+y_benign_test = np.zeros(X_benign_test.shape[0])
+y_malignant_test = np.ones(X_malignant_test.shape[0])
+
+
+X_train = np.concatenate((X_benign, X_malignant), axis = 0)
+y_train = np.concatenate((y_benign, y_malignant), axis = 0)
+X_test = np.concatenate((X_benign_test, X_malignant_test), axis = 0)
+y_test = np.concatenate((y_benign_test, y_malignant_test), axis = 0)
+
+s = np.arange(X_train.shape[0])
+np.random.shuffle(s)
+X_train = X_train[s]
+y_train = y_train[s]
+s = np.arange(X_test.shape[0])
+np.random.shuffle(s)
+X_test = X_test[s]
+y_test = y_test[s]
+
+y_train = to_categorical(y_train, num_classes= 2)
+y_test = to_categorical(y_test, num_classes= 2)
+
+X_train = X_train/255
+X_test = X_test/255
+
+def build(input_shape= (224,224,3), lr = 1e-3, num_classes= 2,
+          init= 'normal', activ= 'relu', optim= 'adam'):
+    
+    model = Sequential()
+    
+    model.add(Conv2D(64, kernel_size=(3, 3),padding = 'Same',input_shape=input_shape,
+                     activation= activ, kernel_initializer='glorot_uniform'))
+    model.add(MaxPool2D(pool_size = (2, 2)))
+    model.add(Dropout(0.25))
+
+    model.add(Conv2D(64, kernel_size=(3, 3),padding = 'Same', 
+                     activation =activ, kernel_initializer = 'glorot_uniform'))
+    model.add(MaxPool2D(pool_size = (2, 2)))
+    model.add(Dropout(0.25))
+
+    model.add(Flatten())
+    model.add(Dense(128, activation='relu', kernel_initializer=init))
+    model.add(Dense(num_classes, activation='softmax'))
+    model.summary()
+
+    if optim == 'rmsprop':
+        optimizer = RMSprop(lr=lr)
+
+    else:
+        optimizer = Adam(lr=lr)
+
+    model.compile(optimizer=optimizer,loss="categorical_crossentropy",metrics=["accuracy"])
+    return model
+
+reduce_lr = ReduceLROnPlateau(monitor='val_accuracy', factor=0.1, patience=3, verbose=1, mode='auto', min_delta=0.0001, min_lr=1e-7)
+
+input_shape = (224,224,3)
+lr = 1e-3
+init = 'normal'
+activ = 'relu'
+optim = 'adam'
+epochs = 25
+batch_size = 64
+
+model = build(lr=lr, init= init, activ= activ, optim=optim, input_shape= input_shape)
+
+history = model.fit(X_train, y_train, validation_split=0.2,
+                    epochs= epochs, batch_size= batch_size, verbose=1, 
+                    callbacks=[reduce_lr]
+                   )
+                   
+print(history.history.keys())
+
+plt.plot(history.history['accuracy'])
+plt.plot(history.history['val_accuracy'])
+plt.title('Training Set and Validation Set')
+plt.ylabel('Accuracy')
+plt.xlabel('Epoch')
+plt.legend(['Train', 'Validation'], loc='upper left')
+plt.show()
+
+plt.plot(history.history['loss'])
+plt.plot(history.history['val_loss'])
+plt.title('Training Set and Validation Set Loss')
+plt.ylabel('Loss')
+plt.xlabel('Epoch')
+plt.legend(['Train', 'Validation'], loc='upper left')
+plt.show()
+
+
+K.clear_session()
+del model
+del history
+
+kfold = KFold(n_splits=3, shuffle=True, random_state=11)
+
+cvscores = []
+for train, test in kfold.split(X_train, y_train):
+  # create model
+    model = build(lr=lr, 
+                  init= init, 
+                  activ= activ, 
+                  optim=optim, 
+                  input_shape= input_shape)
+    
+    # Fit the model
+    model.fit(X_train[train], y_train[train], epochs=epochs, batch_size=batch_size, verbose=1)
+    # evaluate the model
+    scores = model.evaluate(X_train[test], y_train[test], verbose=1)
+    print("%s: %.2f%%" % (model.metrics_names[1], scores[1]*100))
+    cvscores.append(scores[1] * 100)
+    K.clear_session()
+    del model
+    
+print("%.2f%% (+/- %.2f%%)" % (np.mean(cvscores), np.std(cvscores)))
+
+model = build(lr=lr, 
+              init= init, 
+              activ= activ, 
+              optim=optim, 
+              input_shape= input_shape)
+
+model.fit(X_train, y_train,
+          epochs=epochs, batch_size= batch_size, verbose=1,
+          callbacks=[learning_rate_reduction]
+         )
+
+y_pred = model.predict_classes(X_test)
+
+print(accuracy_score(np.argmax(y_test, axis=1),y_pred))
